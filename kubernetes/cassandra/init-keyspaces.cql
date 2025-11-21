@@ -1,0 +1,196 @@
+-- Create metadata_keyspace
+CREATE KEYSPACE IF NOT EXISTS metadata_keyspace
+    WITH replication = {
+        'class': 'NetworkTopologyStrategy',
+        'datacenter1': 3
+        };
+
+-- Create workflow_keyspace
+CREATE KEYSPACE IF NOT EXISTS workflow_keyspace
+    WITH replication = {
+        'class': 'NetworkTopologyStrategy',
+        'datacenter1': 3
+        };
+
+-- Create audit_keyspace
+CREATE KEYSPACE IF NOT EXISTS audit_keyspace
+    WITH replication = {
+        'class': 'NetworkTopologyStrategy',
+        'datacenter1': 3
+        };
+
+-- Create metadata tables
+USE metadata_keyspace;
+
+CREATE TABLE IF NOT EXISTS documents (
+                                         document_id UUID PRIMARY KEY,
+                                         file_name TEXT,
+                                         file_type TEXT,
+                                         file_size BIGINT,
+                                         s3_key TEXT,
+                                         s3_bucket TEXT,
+                                         department TEXT,
+                                         document_type TEXT,
+                                         reference_number TEXT,
+                                         created_at TIMESTAMP,
+                                         created_by TEXT,
+                                         modified_at TIMESTAMP,
+                                         modified_by TEXT,
+                                         current_version INT,
+                                         status TEXT,
+                                         tags SET<TEXT>,
+                                         custom_metadata MAP<TEXT, TEXT>,
+                                         ocr_status TEXT,
+                                         ocr_confidence DECIMAL,
+                                         retention_policy TEXT,
+                                         archival_date TIMESTAMP,
+                                         is_deleted BOOLEAN
+);
+
+CREATE INDEX IF NOT EXISTS ON documents (department);
+CREATE INDEX IF NOT EXISTS ON documents (document_type);
+CREATE INDEX IF NOT EXISTS ON documents (status);
+
+CREATE TABLE IF NOT EXISTS documents_by_department (
+                                                       department TEXT,
+                                                       document_type TEXT,
+                                                       created_at TIMESTAMP,
+                                                       document_id UUID,
+                                                       file_name TEXT,
+                                                       status TEXT,
+                                                       created_by TEXT,
+                                                       PRIMARY KEY ((department), document_type, created_at, document_id)
+) WITH CLUSTERING ORDER BY (document_type ASC, created_at DESC, document_id ASC);
+
+CREATE TABLE IF NOT EXISTS document_versions (
+                                                 document_id UUID,
+                                                 version_number INT,
+                                                 s3_key TEXT,
+                                                 created_at TIMESTAMP,
+                                                 created_by TEXT,
+                                                 change_description TEXT,
+                                                 file_size BIGINT,
+                                                 checksum TEXT,
+                                                 PRIMARY KEY (document_id, version_number)
+) WITH CLUSTERING ORDER BY (version_number DESC);
+
+CREATE TABLE IF NOT EXISTS documents_by_tag (
+                                                tag TEXT,
+                                                document_id UUID,
+                                                file_name TEXT,
+                                                department TEXT,
+                                                created_at TIMESTAMP,
+                                                PRIMARY KEY (tag, document_id)
+);
+
+-- Create workflow tables
+USE workflow_keyspace;
+
+CREATE TYPE IF NOT EXISTS workflow_step (
+                                            step_number INT,
+                                            step_name TEXT,
+                                            step_type TEXT,
+                                            assignee_role TEXT,
+                                            timeout_hours INT,
+                                            escalation_rules MAP<TEXT, TEXT>
+                                        );
+
+CREATE TABLE IF NOT EXISTS workflow_definitions (
+                                                    workflow_id UUID PRIMARY KEY,
+                                                    name TEXT,
+                                                    description TEXT,
+                                                    document_type TEXT,
+                                                    steps LIST<FROZEN<workflow_step>>,
+                                                    created_at TIMESTAMP,
+                                                    created_by TEXT,
+                                                    modified_at TIMESTAMP,
+                                                    is_active BOOLEAN
+);
+
+CREATE INDEX IF NOT EXISTS ON workflow_definitions (document_type);
+
+CREATE TABLE IF NOT EXISTS workflow_instances (
+                                                  instance_id UUID PRIMARY KEY,
+                                                  workflow_id UUID,
+                                                  document_id UUID,
+                                                  current_step INT,
+                                                  status TEXT,
+                                                  started_at TIMESTAMP,
+                                                  completed_at TIMESTAMP,
+                                                  initiated_by TEXT,
+                                                  metadata MAP<TEXT, TEXT>
+);
+
+CREATE INDEX IF NOT EXISTS ON workflow_instances (document_id);
+CREATE INDEX IF NOT EXISTS ON workflow_instances (status);
+
+CREATE TABLE IF NOT EXISTS workflow_step_executions (
+                                                        instance_id UUID,
+                                                        step_number INT,
+                                                        execution_id UUID,
+                                                        assignee TEXT,
+                                                        status TEXT,
+                                                        assigned_at TIMESTAMP,
+                                                        started_at TIMESTAMP,
+                                                        completed_at TIMESTAMP,
+                                                        action TEXT,
+                                                        comments TEXT,
+                                                        PRIMARY KEY (instance_id, step_number, execution_id)
+) WITH CLUSTERING ORDER BY (step_number ASC, execution_id DESC);
+
+CREATE TABLE IF NOT EXISTS pending_tasks_by_assignee (
+                                                         assignee TEXT,
+                                                         assigned_at TIMESTAMP,
+                                                         instance_id UUID,
+                                                         step_number INT,
+                                                         document_id UUID,
+                                                         workflow_name TEXT,
+                                                         PRIMARY KEY (assignee, assigned_at, instance_id)
+) WITH CLUSTERING ORDER BY (assigned_at DESC);
+
+-- Create audit tables
+USE audit_keyspace;
+
+CREATE TABLE IF NOT EXISTS audit_logs (
+                                          date_bucket TEXT,
+                                          timestamp TIMESTAMP,
+                                          audit_id UUID,
+                                          user_id TEXT,
+                                          user_role TEXT,
+                                          action TEXT,
+                                          resource_type TEXT,
+                                          resource_id UUID,
+                                          ip_address TEXT,
+                                          user_agent TEXT,
+                                          result TEXT,
+                                          details MAP<TEXT, TEXT>,
+                                          hash TEXT,
+                                          PRIMARY KEY (date_bucket, timestamp, audit_id)
+) WITH CLUSTERING ORDER BY (timestamp DESC, audit_id ASC)
+   AND default_time_to_live = 220752000;
+
+CREATE INDEX IF NOT EXISTS ON audit_logs (user_id);
+CREATE INDEX IF NOT EXISTS ON audit_logs (resource_id);
+
+CREATE TABLE IF NOT EXISTS audit_logs_by_user (
+                                                  user_id TEXT,
+                                                  timestamp TIMESTAMP,
+                                                  audit_id UUID,
+                                                  action TEXT,
+                                                  resource_type TEXT,
+                                                  resource_id UUID,
+                                                  result TEXT,
+                                                  PRIMARY KEY (user_id, timestamp, audit_id)
+) WITH CLUSTERING ORDER BY (timestamp DESC, audit_id ASC)
+   AND default_time_to_live = 220752000;
+
+CREATE TABLE IF NOT EXISTS audit_logs_by_resource (
+                                                      resource_id UUID,
+                                                      timestamp TIMESTAMP,
+                                                      audit_id UUID,
+                                                      user_id TEXT,
+                                                      action TEXT,
+                                                      result TEXT,
+                                                      PRIMARY KEY (resource_id, timestamp, audit_id)
+) WITH CLUSTERING ORDER BY (timestamp DESC, audit_id ASC)
+   AND default_time_to_live = 220752000;
